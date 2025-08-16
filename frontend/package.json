@@ -10,11 +10,18 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@headlessui/react": "^2.2.0",
+    "@heroicons/react": "^2.1.5",
     "axios": "^1.7.2",
+    "chart.js": "^4.4.6",
+    "chartjs-adapter-date-fns": "^3.0.0",
     "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
     "react": "^18.3.1",
+    "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.1",
+    "recharts": "^2.15.0",
     "zustand": "^4.5.2"
   },
   "devDependencies": {
