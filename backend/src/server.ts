@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import multer from 'multer';
+import path from 'path';
 import { nanoid } from 'nanoid';
 import { kumoRFMService, PatientProfile } from './services/kumoRFMService';
 
@@ -15,6 +17,21 @@ app.use(
     credentials: true,
   })
 );
+
+// Configure multer for file uploads
+const upload = multer({
+  dest: 'uploads/',
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'text/csv' || path.extname(file.originalname) === '.csv') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'));
+    }
+  },
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+});
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -61,6 +78,145 @@ app.get('/api/health', (req, res) => {
     kumoRFM: process.env.KUMORFM_API_KEY ? 'connected' : 'not_configured',
     timestamp: new Date().toISOString(),
   });
+});
+
+// CSV Upload and Processing
+app.post('/api/data/upload-csv', upload.single('csvFile'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No CSV file uploaded' });
+    }
+
+    const { parse } = await import('csv-parse/sync');
+    const fs = await import('fs');
+    
+    // Read and parse CSV
+    const fileContent = fs.readFileSync(req.file.path, 'utf-8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      cast: true
+    });
+
+    console.log(`Processing ${records.length} patient records from CSV...`);
+
+    const results = {
+      processed: 0,
+      predictions: [] as any[],
+      errors: [] as string[]
+    };
+
+    // Process each record and send to Kumo RFM
+    for (const record of records) {
+      try {
+        // Transform CSV record to PatientProfile format
+        const patientProfile: PatientProfile = {
+          id: record.patient_id || `P-${nanoid(8)}`,
+          age: Number(record.age),
+          sex: record.sex as 'M' | 'F',
+          race: record.race || 'Unknown',
+          medications: record.medications ? record.medications.split(',').map((m: string) => m.trim()) : [],
+          comorbidities: record.comorbidities ? record.comorbidities.split(',').map((c: string) => c.trim()) : [],
+          labResults: {
+            ...(record.creatinine && { creatinine: Number(record.creatinine) }),
+            ...(record.alt && { alt: Number(record.alt) }),
+            ...(record.ast && { ast: Number(record.ast) }),
+            ...(record.hemoglobin && { hemoglobin: Number(record.hemoglobin) })
+          },
+          vitalSigns: {
+            ...(record.bp_systolic && { bp_systolic: Number(record.bp_systolic) }),
+            ...(record.bp_diastolic && { bp_diastolic: Number(record.bp_diastolic) }),
+            ...(record.heart_rate && { heart_rate: Number(record.heart_rate) })
+          }
+        };
+
+        // Get prediction from Kumo RFM
+        const prediction = await kumoRFMService.predictRisk(patientProfile);
+        
+        results.predictions.push({
+          ...prediction,
+          studyGroup: record.study_group || 'default',
+          originalData: record
+        });
+        
+        results.processed++;
+
+        // Add to our in-memory storage
+        patients.push(patientProfile);
+
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        results.errors.push(`Error processing patient ${record.patient_id}: ${errorMessage}`);
+      }
+    }
+
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      message: `Successfully processed ${results.processed} patients`,
+      ...results
+    });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `Failed to process CSV: ${errorMessage}` });
+  }
+});
+
+// Generate sample CSV template
+app.get('/api/data/sample-csv', (req, res) => {
+  const sampleData = [
+    {
+      patient_id: 'P-001',
+      age: 65,
+      sex: 'M',
+      race: 'White',
+      weight: 80,
+      height: 175,
+      medications: 'metformin,lisinopril,atorvastatin',
+      comorbidities: 'diabetes,hypertension',
+      creatinine: 1.2,
+      alt: 35,
+      ast: 28,
+      hemoglobin: 14.5,
+      bp_systolic: 140,
+      bp_diastolic: 90,
+      heart_rate: 72,
+      study_group: 'metformin-study',
+      enrollment_date: '2024-01-15',
+      adverse_events: ''
+    },
+    {
+      patient_id: 'P-002',
+      age: 45,
+      sex: 'F',
+      race: 'Asian',
+      weight: 60,
+      height: 160,
+      medications: 'warfarin,metoprolol',
+      comorbidities: 'atrial_fibrillation',
+      creatinine: 0.9,
+      alt: 22,
+      ast: 25,
+      hemoglobin: 12.8,
+      bp_systolic: 120,
+      bp_diastolic: 75,
+      heart_rate: 65,
+      study_group: 'warfarin-study',
+      enrollment_date: '2024-01-20',
+      adverse_events: 'mild_nausea'
+    }
+  ];
+
+  // Convert to CSV format
+  const headers = Object.keys(sampleData[0]).join(',');
+  const rows = sampleData.map(row => Object.values(row).join(','));
+  const csvContent = [headers, ...rows].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="sample_medical_data.csv"');
+  res.send(csvContent);
 });
 
 // Dashboard metrics
@@ -129,9 +285,23 @@ app.get('/api/dashboard/risk-distribution', async (req, res) => {
 // Patients endpoint with risk predictions
 app.get('/api/patients', async (req, res) => {
   try {
-    const predictions = await kumoRFMService.batchPredict(patients);
+    const groupId = req.query.group as string;
+    let filteredPatients = patients;
     
-    const enrichedPatients = patients.map(patient => {
+    // Filter by group if specified
+    if (groupId && groupId !== 'all') {
+      // This is where you'd filter by study group in real implementation
+      // For demo, we'll just return a subset based on group
+      if (groupId === 'metformin-study') {
+        filteredPatients = patients.filter(p => p.medications.includes('metformin'));
+      } else if (groupId === 'warfarin-study') {
+        filteredPatients = patients.filter(p => p.medications.includes('warfarin'));
+      }
+    }
+    
+    const predictions = await kumoRFMService.batchPredict(filteredPatients);
+    
+    const enrichedPatients = filteredPatients.map(patient => {
       const prediction = predictions.find(p => p.patientId === patient.id);
       return {
         id: patient.id,
@@ -305,7 +475,7 @@ app.post('/api/kumorfm/configure', (req, res) => {
 app.get('/api/kumorfm/status', (req, res) => {
   res.json({
     configured: !!process.env.KUMORFM_API_KEY,
-    baseUrl: process.env.KUMORFM_BASE_URL || 'https://api.kumorfm.com/v1',
+    baseUrl: process.env.KUMORFM_BASE_URL || 'https://api.kumo.ai/v1',
     lastConnection: new Date().toISOString(),
   });
 });

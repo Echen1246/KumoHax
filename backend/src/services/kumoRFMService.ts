@@ -14,14 +14,11 @@ export interface PatientProfile {
 export interface RiskPrediction {
   patientId: string;
   riskScore: number;
-  predictedEvents: {
-    eventType: string;
-    probability: number;
-    timeToEvent?: number;
-  }[];
+  predictedEvents: string[];
   riskFactors: {
     factor: string;
-    importance: number;
+    impact: number;
+    confidence: number;
   }[];
   lastUpdated: string;
 }
@@ -29,11 +26,9 @@ export interface RiskPrediction {
 export interface AlertEvent {
   id: string;
   patientId: string;
-  alertType: string;
-  severity: 'low' | 'medium' | 'high';
-  riskScore: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
-  recommendedActions: string[];
+  riskScore: number;
   timestamp: string;
 }
 
@@ -44,142 +39,183 @@ class KumoRFMService {
 
   constructor() {
     this.apiKey = process.env.KUMORFM_API_KEY || '';
-    this.baseURL = process.env.KUMORFM_BASE_URL || 'https://api.kumorfm.com/v1';
+    this.baseURL = process.env.KUMORFM_BASE_URL || 'https://api.kumo.ai/v1';
     
     this.client = axios.create({
       baseURL: this.baseURL,
-      timeout: 30000,
+      timeout: parseInt(process.env.KUMORFM_TIMEOUT || '30000'),
       headers: {
         'Authorization': `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
     });
+
+    console.log(`[KumoRFM] Initialized with base URL: ${this.baseURL}`);
+    console.log(`[KumoRFM] API Key configured: ${!!this.apiKey}`);
   }
 
   async predictRisk(patientProfile: PatientProfile): Promise<RiskPrediction> {
     try {
-      const response = await this.client.post('/predict/adverse-events', {
-        patient: patientProfile,
-        modelVersion: '2.1',
-        includeExplanability: true,
-      });
+      if (!this.apiKey) {
+        console.warn('[KumoRFM] No API key configured, using mock data');
+        return this.getMockRiskPrediction(patientProfile.id);
+      }
 
+      // Transform patient data for Kumo API format
+      const kumoPayload = {
+        patient_data: {
+          demographics: {
+            age: patientProfile.age,
+            sex: patientProfile.sex,
+            race: patientProfile.race,
+          },
+          medications: patientProfile.medications,
+          comorbidities: patientProfile.comorbidities,
+          lab_results: patientProfile.labResults,
+          vital_signs: patientProfile.vitalSigns,
+        },
+        model_version: process.env.KUMORFM_MODEL_VERSION || '2.1',
+        prediction_type: 'adverse_event_risk',
+      };
+
+      console.log(`[KumoRFM] Predicting risk for patient: ${patientProfile.id}`);
+      
+      const response = await this.client.post('/predict', kumoPayload);
+      
       return {
         patientId: patientProfile.id,
-        riskScore: response.data.overallRisk,
-        predictedEvents: response.data.predictions,
-        riskFactors: response.data.riskFactors,
+        riskScore: response.data.risk_score || 0,
+        predictedEvents: response.data.predicted_events || [],
+        riskFactors: response.data.risk_factors || [],
         lastUpdated: new Date().toISOString(),
       };
+
     } catch (error) {
-      console.error('KumoRFM API Error:', error);
-      // Return mock data if API is unavailable
+      console.error(`[KumoRFM] Error predicting risk for patient ${patientProfile.id}:`, error);
+      
+      // Fall back to mock data on error
       return this.getMockRiskPrediction(patientProfile.id);
     }
   }
 
   async batchPredict(patients: PatientProfile[]): Promise<RiskPrediction[]> {
-    try {
-      const response = await this.client.post('/predict/batch', {
-        patients,
-        modelVersion: '2.1',
-      });
-
-      return response.data.predictions;
-    } catch (error) {
-      console.error('KumoRFM Batch API Error:', error);
-      // Return mock data if API is unavailable
-      return patients.map(p => this.getMockRiskPrediction(p.id));
+    const predictions: RiskPrediction[] = [];
+    
+    // Process in smaller batches to avoid API limits
+    const batchSize = 5;
+    
+    for (let i = 0; i < patients.length; i += batchSize) {
+      const batch = patients.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(patient => 
+        this.predictRisk(patient).catch(error => {
+          console.error(`Error in batch prediction for ${patient.id}:`, error);
+          return this.getMockRiskPrediction(patient.id);
+        })
+      );
+      
+      const batchResults = await Promise.all(batchPromises);
+      predictions.push(...batchResults);
+      
+      // Small delay between batches
+      if (i + batchSize < patients.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
     }
+    
+    return predictions;
   }
 
   async getModelMetrics(): Promise<any> {
     try {
-      const response = await this.client.get('/models/metrics');
+      if (!this.apiKey) {
+        return this.getMockModelMetrics();
+      }
+
+      const response = await this.client.get('/model/metrics');
       return response.data;
     } catch (error) {
-      console.error('KumoRFM Model Metrics Error:', error);
-      return {
-        accuracy: 0.892,
-        auc: 0.934,
-        precision: 0.876,
-        recall: 0.923,
-        f1Score: 0.899,
-        lastTrainingDate: '2024-01-01',
-        datasetSize: 145720,
-      };
+      console.error('[KumoRFM] Error fetching model metrics:', error);
+      return this.getMockModelMetrics();
     }
   }
 
   async streamAlerts(callback: (alert: AlertEvent) => void): Promise<void> {
-    try {
-      // In a real implementation, this would establish a WebSocket or SSE connection
-      // For now, we'll simulate with periodic checks
-      console.log('Starting KumoRFM alert stream...');
+    // Simulate real-time alerts for demo
+    // In production, this would connect to Kumo's streaming endpoint
+    
+    const generateAlert = () => {
+      const alert = this.generateMockAlert();
+      callback(alert);
       
-      // Mock real-time alerts for demo
-      setInterval(() => {
-        const mockAlert = this.generateMockAlert();
-        callback(mockAlert);
-      }, 10000); // Every 10 seconds
-      
-    } catch (error) {
-      console.error('KumoRFM Alert Stream Error:', error);
-    }
+      // Schedule next alert (random interval between 10-60 seconds)
+      const nextInterval = Math.random() * 50000 + 10000;
+      setTimeout(generateAlert, nextInterval);
+    };
+    
+    // Start generating alerts
+    setTimeout(generateAlert, 5000);
   }
 
   private getMockRiskPrediction(patientId: string): RiskPrediction {
-    const riskScore = Math.random() * 0.4 + 0.1; // Random score between 0.1-0.5
+    const riskScore = Math.random() * 0.7 + 0.1; // 0.1 to 0.8
+    
+    const possibleEvents = [
+      'Hepatotoxicity',
+      'Cardiac Arrhythmia',
+      'Renal Function Decline',
+      'GI Bleeding',
+      'Hypoglycemia',
+      'Hyperkalemia',
+      'Drug Interaction',
+    ];
+    
+    const predictedEvents = possibleEvents
+      .sort(() => Math.random() - 0.5)
+      .slice(0, Math.floor(Math.random() * 3) + 1);
     
     return {
       patientId,
       riskScore,
-      predictedEvents: [
-        {
-          eventType: 'hepatotoxicity',
-          probability: riskScore * 0.8,
-          timeToEvent: Math.floor(Math.random() * 30) + 1,
-        },
-        {
-          eventType: 'cardiac_arrhythmia',
-          probability: riskScore * 0.6,
-          timeToEvent: Math.floor(Math.random() * 45) + 1,
-        },
-      ],
+      predictedEvents,
       riskFactors: [
-        { factor: 'age', importance: 0.23 },
-        { factor: 'polypharmacy', importance: 0.18 },
-        { factor: 'renal_function', importance: 0.15 },
-        { factor: 'drug_interactions', importance: 0.12 },
+        { factor: 'Age', impact: 0.3, confidence: 0.9 },
+        { factor: 'Medication Interactions', impact: 0.25, confidence: 0.85 },
+        { factor: 'Comorbidities', impact: 0.2, confidence: 0.8 },
       ],
       lastUpdated: new Date().toISOString(),
     };
   }
 
-  private generateMockAlert(): AlertEvent {
-    const patientIds = ['P-1001', 'P-1002', 'P-1003', 'P-1847', 'P-2193'];
-    const alertTypes = ['hepatotoxicity', 'cardiac_arrhythmia', 'renal_dysfunction', 'drug_interaction'];
-    const severities: Array<'low' | 'medium' | 'high'> = ['low', 'medium', 'high'];
-    
-    const patientId = patientIds[Math.floor(Math.random() * patientIds.length)];
-    const alertType = alertTypes[Math.floor(Math.random() * alertTypes.length)];
-    const severity = severities[Math.floor(Math.random() * severities.length)];
-    const riskScore = severity === 'high' ? Math.random() * 0.3 + 0.7 : 
-                     severity === 'medium' ? Math.random() * 0.4 + 0.3 : 
-                     Math.random() * 0.3;
-
+  private getMockModelMetrics() {
     return {
-      id: `A-${Date.now()}`,
-      patientId,
-      alertType,
-      severity,
-      riskScore,
-      description: `Elevated risk of ${alertType.replace('_', ' ')} detected`,
-      recommendedActions: [
-        'Review current medications',
-        'Monitor lab values',
-        'Consider dose adjustment',
-      ],
+      accuracy: 0.876,
+      precision: 0.823,
+      recall: 0.891,
+      f1_score: 0.856,
+      auc_roc: 0.924,
+      model_version: '2.1',
+      last_trained: '2024-01-15T10:30:00Z',
+      training_samples: 125847,
+    };
+  }
+
+  private generateMockAlert(): AlertEvent {
+    const severities: ('low' | 'medium' | 'high' | 'critical')[] = ['low', 'medium', 'high', 'critical'];
+    const conditions = [
+      'Elevated liver enzymes detected',
+      'Cardiac rhythm abnormality risk',
+      'Renal function declining trend',
+      'Drug interaction warning',
+      'Blood glucose instability',
+    ];
+    
+    return {
+      id: `ALT-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      patientId: `P-${Math.floor(Math.random() * 9000) + 1000}`,
+      severity: severities[Math.floor(Math.random() * severities.length)],
+      description: conditions[Math.floor(Math.random() * conditions.length)],
+      riskScore: Math.random() * 0.6 + 0.4, // 0.4 to 1.0 for alerts
       timestamp: new Date().toISOString(),
     };
   }
