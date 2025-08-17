@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Group } from '../components/GroupSelector';
 import { apiClient } from '../lib/api';
+import { AddPatientModal } from '../components/AddPatientModal';
 
 interface Patient {
   id: string;
@@ -21,11 +22,12 @@ interface LayoutContext {
 }
 
 export const PatientsPage: React.FC = () => {
-  const { selectedGroup } = useOutletContext<LayoutContext>();
+  const { selectedGroup } = useOutletContext<{ selectedGroup: Group | null }>();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
 
   // Fetch patients data
   useEffect(() => {
@@ -34,16 +36,15 @@ export const PatientsPage: React.FC = () => {
         setLoading(true);
         setError(null);
         
-        // Add group filter if selected
         const params = selectedGroup && selectedGroup.id !== 'all' 
-          ? `?group=${selectedGroup.id}` 
+          ? `?group=${encodeURIComponent(selectedGroup.id)}` 
           : '';
         
         const response = await apiClient.get(`/patients${params}`);
         setPatients(response.data);
       } catch (err) {
+        setError('Failed to load patients. Please try again.');
         console.error('Error fetching patients:', err);
-        setError('Failed to load patient data. Please check your connection to the backend.');
       } finally {
         setLoading(false);
       }
@@ -52,11 +53,38 @@ export const PatientsPage: React.FC = () => {
     fetchPatients();
   }, [selectedGroup]);
 
+  const handlePatientAdded = () => {
+    // Trigger a re-fetch by updating the selectedGroup dependency
+    setLoading(true);
+    const fetchPatients = async () => {
+      try {
+        setError(null);
+        
+        const params = selectedGroup && selectedGroup.id !== 'all' 
+          ? `?group=${encodeURIComponent(selectedGroup.id)}` 
+          : '';
+        
+        const response = await apiClient.get(`/patients${params}`);
+        setPatients(response.data);
+      } catch (err) {
+        setError('Failed to load patients. Please try again.');
+        console.error('Error fetching patients:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchPatients();
+  };
+
   // Filter patients based on search term
-  const filteredPatients = patients.filter(patient => 
+  const filteredPatients = patients.filter(patient =>
     patient.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    patient.medications.some(med => med.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    patient.comorbidities.some(cond => cond.toLowerCase().includes(searchTerm.toLowerCase()))
+    patient.medications.some(med => 
+      med.toLowerCase().includes(searchTerm.toLowerCase())
+    ) ||
+    patient.comorbidities.some(condition => 
+      condition.toLowerCase().includes(searchTerm.toLowerCase())
+    )
   );
 
   const getRiskLevel = (score: number) => {
@@ -67,30 +95,24 @@ export const PatientsPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading patient data from Kumo RFM...</p>
-        </div>
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-        <div className="flex items-center">
-          <svg className="w-5 h-5 text-red-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span className="text-red-800 font-medium">Error loading patients</span>
-        </div>
-        <p className="text-red-700 mt-2">{error}</p>
+      <div className="bg-red-50 border border-red-200 rounded-md p-4">
+        <p className="text-red-800">Error: {error}</p>
         <button 
-          onClick={() => window.location.reload()} 
-          className="mt-3 bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700"
+          onClick={() => {
+            setError(null);
+            handlePatientAdded();
+          }}
+          className="mt-2 text-red-600 hover:text-red-800 underline"
         >
-          Retry
+          Try again
         </button>
       </div>
     );
@@ -99,21 +121,20 @@ export const PatientsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Patient Management</h1>
+          <h1 className="text-2xl font-bold">Patients</h1>
           <p className="text-gray-600">
-            Monitor patient risk scores and adverse event predictions
-            {selectedGroup && selectedGroup.id !== 'all' && (
-              <span className="ml-2 text-blue-600">
-                • Filtered by: {selectedGroup.name}
-              </span>
-            )}
+            {selectedGroup ? `${selectedGroup.name} • ` : ''}{patients.length} patient{patients.length !== 1 ? 's' : ''}
           </p>
         </div>
-        <div className="text-sm text-gray-500">
-          {filteredPatients.length} patients
-        </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 flex items-center space-x-2"
+        >
+          <span>+</span>
+          <span>Add Patient</span>
+        </button>
       </div>
 
       {/* Search */}
@@ -280,6 +301,12 @@ export const PatientsPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      <AddPatientModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onPatientAdded={handlePatientAdded}
+      />
     </div>
   );
 }; 

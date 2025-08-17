@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 kumo_client = None
 kumo_connected = False
 
+# In-memory storage for patients (in production, use a proper database)
+stored_patients = []
+patient_counter = 1000  # Starting patient ID counter
+
 async def initialize_kumo():
     """Initialize Kumo client with API key"""
     global kumo_client, kumo_connected
@@ -284,147 +288,97 @@ def _get_enhanced_distribution(source: str):
 @app.get("/alerts/recent")
 async def get_recent_alerts():
     """Recent alerts for dashboard"""
-    if kumo_connected and kumo_client:
-        try:
-            # Get real alerts from Kumo monitoring
-            logger.info("Fetching real alerts from Kumo")
-            
-            # TODO: Query actual recent high-risk predictions
-            # alerts = kumo_client.query("""
-            #     SELECT patient_id, risk_score, predicted_events, prediction_timestamp
-            #     FROM patient_predictions 
-            #     WHERE risk_score > 0.6 
-            #     AND prediction_timestamp >= DATETIME('now', '-24 hours')
-            #     ORDER BY risk_score DESC 
-            #     LIMIT 8
-            # """)
-            
-            return _generate_enhanced_alerts("kumo")
-        except Exception as e:
-            logger.error(f"Error fetching Kumo alerts: {e}")
-            return _generate_enhanced_alerts("mock")
-    else:
-        return _generate_enhanced_alerts("mock")
-
-def _generate_enhanced_alerts(source: str):
-    """Generate enhanced alerts"""
-    import random
+    if len(stored_patients) == 0:
+        # No patients available, return empty alerts
+        return []
     
-    conditions = {
-        "kumo": ["Hepatotoxicity", "Cardiac Arrhythmia", "Acute Kidney Injury", "Drug-Drug Interaction"],
-        "mock": ["Hepatotoxicity", "Cardiac Risk", "Renal Decline", "Drug Interaction"]
-    }
-    
-    severities = {
-        "kumo": ["critical", "high", "high", "medium"],  # More critical alerts from ML
-        "mock": ["high", "critical", "medium", "high"]
-    }
-    
-    alerts = []
-    for i in range(8):
-        alert_source = source
-        risk_base = 0.65 if source == "kumo" else 0.6  # Kumo tends to identify higher risks
+    try:
+        # Get high-risk patients (risk score > 0.6) from stored data
+        high_risk_patients = [p for p in stored_patients if p.get("riskScore", 0) > 0.6]
         
-        alerts.append({
-            "id": f"ALT-{1000 + i}",
-            "patientId": f"P-{2000 + i}",
-            "riskScore": round(risk_base + (i * 0.04), 3),
-            "condition": random.choice(conditions[source]),
-            "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
-            "severity": severities[source][i % 4],
-            "dataSource": alert_source,
-            "confidence": round(np.random.uniform(0.82, 0.96), 3) if source == "kumo" else round(np.random.uniform(0.70, 0.85), 3)
-        })
-    
-    return alerts
+        # Sort by risk score descending and take top 8
+        high_risk_patients.sort(key=lambda x: x.get("riskScore", 0), reverse=True)
+        top_patients = high_risk_patients[:8]
+        
+        alerts = []
+        for i, patient in enumerate(top_patients):
+            # Use the most severe predicted event as the condition
+            predicted_events = patient.get("predictedEvents", ["Unknown Risk"])
+            condition = predicted_events[0] if predicted_events else "Unknown Risk"
+            
+            # Determine severity based on risk score
+            risk_score = patient.get("riskScore", 0)
+            if risk_score >= 0.8:
+                severity = "critical"
+            elif risk_score >= 0.7:
+                severity = "high"
+            else:
+                severity = "medium"
+            
+            alert = {
+                "id": f"ALT-{patient['id']}-{datetime.now().timestamp()}",
+                "patientId": patient["id"],
+                "riskScore": patient.get("riskScore", 0),
+                "condition": condition,
+                "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
+                "severity": severity,
+                "dataSource": patient.get("dataSource", "unknown"),
+                "confidence": patient.get("confidence", 0.8)
+            }
+            alerts.append(alert)
+        
+        # If we don't have enough high-risk patients, fill with medium-risk ones
+        if len(alerts) < 8:
+            medium_risk_patients = [p for p in stored_patients if 0.3 <= p.get("riskScore", 0) <= 0.6]
+            medium_risk_patients.sort(key=lambda x: x.get("riskScore", 0), reverse=True)
+            
+            remaining_slots = 8 - len(alerts)
+            for i, patient in enumerate(medium_risk_patients[:remaining_slots]):
+                predicted_events = patient.get("predictedEvents", ["Monitoring Required"])
+                condition = predicted_events[0] if predicted_events else "Monitoring Required"
+                
+                alert = {
+                    "id": f"ALT-{patient['id']}-{datetime.now().timestamp()}",
+                    "patientId": patient["id"],
+                    "riskScore": patient.get("riskScore", 0),
+                    "condition": condition,
+                    "timestamp": (datetime.now() - timedelta(hours=len(alerts) + i)).isoformat(),
+                    "severity": "medium",
+                    "dataSource": patient.get("dataSource", "unknown"),
+                    "confidence": patient.get("confidence", 0.8)
+                }
+                alerts.append(alert)
+        
+        logger.info(f"Generated {len(alerts)} alerts from {len(stored_patients)} stored patients")
+        return alerts
+        
+    except Exception as e:
+        logger.error(f"Error generating alerts: {e}")
+        return []
 
 @app.get("/patients")
 async def get_patients(group: Optional[str] = None):
     """Get patients list with optional group filtering"""
-    if kumo_connected and kumo_client:
-        try:
-            # Get real patient data with Kumo predictions
-            logger.info(f"Fetching real patient data from Kumo for group: {group}")
-            
-            # TODO: Query actual patient data with predictions
-            # Example query structure:
-            # patients = kumo_client.query(f"""
-            #     SELECT 
-            #         p.patient_id, p.age, p.sex, p.race,
-            #         p.medications, p.comorbidities,
-            #         pred.risk_score, pred.predicted_events,
-            #         pred.prediction_timestamp
-            #     FROM patients p
-            #     JOIN patient_predictions pred ON p.patient_id = pred.patient_id
-            #     WHERE pred.prediction_timestamp = (
-            #         SELECT MAX(prediction_timestamp) 
-            #         FROM patient_predictions pp 
-            #         WHERE pp.patient_id = p.patient_id
-            #     )
-            #     {f"AND p.study_group = '{group}'" if group and group != "all" else ""}
-            #     ORDER BY pred.risk_score DESC
-            # """)
-            
-            return _generate_enhanced_patients(group, "kumo")
-        except Exception as e:
-            logger.error(f"Error fetching Kumo patients: {e}")
-            return _generate_enhanced_patients(group, "mock")
-    else:
-        return _generate_enhanced_patients(group, "mock")
-
-def _generate_enhanced_patients(group: Optional[str], source: str):
-    """Generate enhanced patient data"""
-    patients = []
+    if len(stored_patients) == 0:
+        # No patients uploaded yet, return empty list with helpful message
+        return []
     
-    # More realistic medical conditions and medications
-    medication_options = {
-        "metformin-study": [["Metformin"], ["Metformin", "Lisinopril"], ["Metformin", "Atorvastatin"]],
-        "warfarin-study": [["Warfarin"], ["Warfarin", "Digoxin"], ["Warfarin", "Amiodarone"]],
-        "all": [["Metformin"], ["Warfarin"], ["Lisinopril"], ["Atorvastatin"], ["Aspirin"]]
-    }
-    
-    comorbidity_options = {
-        "metformin-study": [["Type 2 Diabetes"], ["Type 2 Diabetes", "Hypertension"], ["Type 2 Diabetes", "CAD"]],
-        "warfarin-study": [["Atrial Fibrillation"], ["Atrial Fibrillation", "Heart Failure"], ["DVT", "Hypertension"]],
-        "all": [["Type 2 Diabetes"], ["Hypertension"], ["CAD"], ["Atrial Fibrillation"]]
-    }
-    
-    predicted_events_options = {
-        "kumo": [["Hepatotoxicity"], ["Cardiac Arrhythmia"], ["Acute Kidney Injury"], ["Drug-Drug Interaction"]],
-        "mock": [["Hepatotoxicity"], ["Cardiac Arrhythmia"], ["Renal Decline"]]
-    }
-    
-    selected_group = group if group and group != "all" else "all"
-    
-    for i in range(50):
-        # More realistic risk distribution
-        if source == "kumo":
-            risk_score = round(np.random.beta(2, 5), 3)  # Beta distribution skewed toward lower risk
-        else:
-            risk_score = round(0.1 + (i % 8) * 0.1, 3)
-            
-        patient = {
-            "id": f"P-{1000 + i}",
-            "age": 25 + (i % 60),
-            "sex": "M" if i % 2 == 0 else "F",
-            "race": ["White", "Black", "Hispanic", "Asian", "Other"][i % 5],
-            "medications": medication_options[selected_group][i % len(medication_options[selected_group])],
-            "comorbidities": comorbidity_options[selected_group][i % len(comorbidity_options[selected_group])],
-            "riskScore": risk_score,
-            "predictedEvents": predicted_events_options[source][i % len(predicted_events_options[source])],
-            "lastUpdated": datetime.now().isoformat(),
-            "dataSource": source,
-            "confidence": round(np.random.uniform(0.85, 0.95), 3) if source == "kumo" else round(np.random.uniform(0.70, 0.85), 3)
-        }
-        patients.append(patient)
+    patients = stored_patients.copy()
     
     # Filter by group if specified
-    if group and group != "all":
-        if group == "metformin-study":
-            patients = [p for p in patients if any("Metformin" in med for med in p["medications"])]
+    if group and group != "all" and group != "none":
+        if group.endswith("-group"):
+            # Extract medication name from group ID (e.g., "metformin-group" -> "Metformin")
+            medication = group.replace("-group", "").replace("-", " ").title()
+            patients = [p for p in patients if any(medication.lower() in str(med).lower() for med in p.get("medications", []))]
+        # Legacy support for old group names
+        elif group == "metformin-study":
+            patients = [p for p in patients if any("Metformin" in str(med) for med in p.get("medications", []))]
         elif group == "warfarin-study":
-            patients = [p for p in patients if any("Warfarin" in med for med in p["medications"])]
-    
+            patients = [p for p in patients if any("Warfarin" in str(med) for med in p.get("medications", []))]
+        # Add more group filters as needed based on actual patient data
+        
+    logger.info(f"Returning {len(patients)} patients for group: {group}")
     return patients
 
 @app.get("/events/alerts")
@@ -475,6 +429,7 @@ async def get_alert_stream():
 @app.post("/upload/csv")
 async def upload_patient_csv(file: UploadFile = File(...)):
     """Upload patient data CSV for Kumo processing"""
+    global stored_patients, patient_counter
     
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
@@ -496,81 +451,66 @@ async def upload_patient_csv(file: UploadFile = File(...)):
                 detail=f"Missing required columns: {missing_columns}"
             )
         
-        if kumo_connected and kumo_client:
-            # Process with Kumo
-            logger.info("Processing CSV data with Kumo client")
-            
-            processed_patients = []
-            for _, row in df.iterrows():
-                try:
-                    # Transform CSV row to PatientData format
-                    patient_data = PatientData(
-                        patient_id=str(row['patient_id']),
-                        age=int(row['age']),
-                        sex=str(row['sex']),
-                        race=str(row.get('race', 'Unknown')),
-                        medications=str(row['medications']).split(',') if pd.notna(row['medications']) else [],
-                        comorbidities=str(row['comorbidities']).split(',') if pd.notna(row['comorbidities']) else []
-                    )
-                    
-                    # TODO: Use Kumo to make predictions for this patient
-                    # prediction = kumo_client.predict(
-                    #     model_name="adverse_event_model",
-                    #     features=patient_data.dict()
-                    # )
-                    
-                    # For now, generate enhanced prediction
-                    prediction = _generate_mock_prediction(patient_data, is_kumo_result=True)
-                    processed_patients.append({
-                        "patient": patient_data.dict(),
-                        "prediction": prediction.dict()
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Error processing patient {row.get('patient_id', 'unknown')}: {e}")
-                    continue
-                    
-            return {
-                "message": f"Successfully processed {len(processed_patients)} patients with Kumo",
-                "totalRows": len(df),
-                "processedRows": len(processed_patients),
-                "dataSource": "kumo",
-                "predictions": processed_patients[:5]  # Return first 5 as examples
-            }
-            
-        else:
-            # Process without Kumo (mock mode)
-            logger.info("Processing CSV data in mock mode")
-            
-            processed_patients = []
-            for _, row in df.iterrows():
-                try:
-                    patient_data = PatientData(
-                        patient_id=str(row['patient_id']),
-                        age=int(row['age']),
-                        sex=str(row['sex']),
-                        race=str(row.get('race', 'Unknown')),
-                        medications=str(row['medications']).split(',') if pd.notna(row['medications']) else [],
-                        comorbidities=str(row['comorbidities']).split(',') if pd.notna(row['comorbidities']) else []
-                    )
-                    
-                    prediction = _generate_mock_prediction(patient_data, is_kumo_result=False)
-                    processed_patients.append({
-                        "patient": patient_data.dict(),
-                        "prediction": prediction.dict()
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Error processing patient {row.get('patient_id', 'unknown')}: {e}")
-                    continue
-            
-            return {
-                "message": f"Successfully processed {len(processed_patients)} patients in mock mode",
-                "totalRows": len(df),
-                "processedRows": len(processed_patients),
-                "dataSource": "mock",
-                "predictions": processed_patients[:5]
-            }
+        # Clear existing patients and process new ones
+        stored_patients.clear()
+        processed_patients = []
+        
+        for _, row in df.iterrows():
+            try:
+                # Transform CSV row to PatientData format
+                patient_data = PatientData(
+                    patient_id=str(row['patient_id']),
+                    age=int(row['age']),
+                    sex=str(row['sex']),
+                    race=str(row.get('race', 'Unknown')),
+                    medications=str(row['medications']).split(',') if pd.notna(row['medications']) else [],
+                    comorbidities=str(row['comorbidities']).split(',') if pd.notna(row['comorbidities']) else []
+                )
+                
+                # Generate prediction using Kumo (or mock)
+                prediction = _generate_mock_prediction(patient_data, is_kumo_result=kumo_connected)
+                
+                # Create patient object for storage
+                patient_obj = {
+                    "id": patient_data.patient_id,
+                    "age": patient_data.age,
+                    "sex": patient_data.sex,
+                    "race": patient_data.race,
+                    "medications": patient_data.medications,
+                    "comorbidities": patient_data.comorbidities,
+                    "riskScore": prediction.risk_score,
+                    "predictedEvents": prediction.predicted_events,
+                    "lastUpdated": datetime.now().isoformat(),
+                    "dataSource": "kumo" if kumo_connected else "mock",
+                    "confidence": prediction.confidence
+                }
+                
+                # Store globally and in response
+                stored_patients.append(patient_obj)
+                processed_patients.append({
+                    "patient": patient_data.dict(),
+                    "prediction": prediction.dict()
+                })
+                
+                # Update counter for future auto-generated IDs
+                if patient_data.patient_id.startswith('P-'):
+                    try:
+                        num = int(patient_data.patient_id.split('-')[1])
+                        patient_counter = max(patient_counter, num + 1)
+                    except:
+                        pass
+                
+            except Exception as e:
+                logger.error(f"Error processing patient {row.get('patient_id', 'unknown')}: {e}")
+                continue
+                
+        return {
+            "message": f"Successfully processed {len(processed_patients)} patients",
+            "totalRows": len(df),
+            "processedRows": len(processed_patients),
+            "dataSource": "kumo" if kumo_connected else "mock",
+            "predictions": processed_patients[:5]  # Return first 5 as examples
+        }
             
     except pd.errors.EmptyDataError:
         raise HTTPException(status_code=400, detail="CSV file is empty")
@@ -579,6 +519,50 @@ async def upload_patient_csv(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error processing CSV upload: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+@app.post("/patients")
+async def create_patient(patient: PatientData):
+    """Create a new patient with auto-generated ID and risk prediction"""
+    global stored_patients, patient_counter
+    
+    try:
+        # Auto-generate patient ID if not provided or if it already exists
+        if not patient.patient_id or any(p["id"] == patient.patient_id for p in stored_patients):
+            patient.patient_id = f"P-{patient_counter:03d}"
+            patient_counter += 1
+            
+        # Generate risk prediction using Kumo (or mock)
+        prediction = _generate_mock_prediction(patient, is_kumo_result=kumo_connected)
+        
+        # Create patient object for storage
+        patient_obj = {
+            "id": patient.patient_id,
+            "age": patient.age,
+            "sex": patient.sex,
+            "race": patient.race,
+            "medications": patient.medications,
+            "comorbidities": patient.comorbidities,
+            "riskScore": prediction.risk_score,
+            "predictedEvents": prediction.predicted_events,
+            "lastUpdated": datetime.now().isoformat(),
+            "dataSource": "kumo" if kumo_connected else "mock",
+            "confidence": prediction.confidence
+        }
+        
+        # Store the patient
+        stored_patients.append(patient_obj)
+        
+        logger.info(f"Created new patient {patient.patient_id} with risk score {prediction.risk_score}")
+        
+        return {
+            "message": f"Successfully created patient {patient.patient_id}",
+            "patient": patient_obj,
+            "prediction": prediction.dict()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating patient: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating patient: {str(e)}")
 
 # Risk Prediction Endpoints
 @app.post("/predict/patient-risk", response_model=RiskPrediction)

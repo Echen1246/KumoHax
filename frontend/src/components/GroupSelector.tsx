@@ -26,125 +26,92 @@ export const GroupSelector: React.FC<GroupSelectorProps> = ({
 
   // Fetch real patient counts for groups
   useEffect(() => {
-    const fetchGroupCounts = async () => {
+    const fetchGroups = async () => {
       try {
         setLoading(true);
 
-        // Fetch patient counts for different groups
-        const responses = await Promise.all([
-          apiClient.get('/patients'),
-          apiClient.get('/patients?group=metformin-study'),
-          apiClient.get('/patients?group=warfarin-study')
-        ]);
-
-        // Create groups with real data
-        const updatedGroups: Group[] = [
-          {
-            id: 'all',
-            name: 'All Patients',
-            description: 'Complete patient population across all studies',
-            patientCount: responses[0].data.length,
-          },
-          {
-            id: 'metformin-study',
-            name: 'Metformin Cohort',
-            description: 'Patients receiving metformin therapy',
-            patientCount: responses[1].data.length,
-            primaryDrug: 'Metformin',
-            studyPhase: 'Phase IV',
-          },
-          {
-            id: 'warfarin-study',
-            name: 'Warfarin Study',
-            description: 'Anticoagulation safety monitoring',
-            patientCount: responses[2].data.length,
-            primaryDrug: 'Warfarin',
-            studyPhase: 'Post-Market',
-          },
-        ];
-
-        // Calculate additional groups based on actual patient data
-        const oncologyCount = responses[0].data.filter((p: any) =>
-          p.medications.some((med: string) =>
-            med.toLowerCase().includes('chemo') ||
-            med.toLowerCase().includes('onco') ||
-            p.comorbidities.some((cond: string) => cond.toLowerCase().includes('cancer'))
-          )
-        ).length;
-
-        const cardioCount = responses[0].data.filter((p: any) =>
-          p.medications.some((med: string) =>
-            med.toLowerCase().includes('statin') ||
-            med.toLowerCase().includes('ace') ||
-            med.toLowerCase().includes('lisinopril') ||
-            med.toLowerCase().includes('atorvastatin')
-          ) ||
-          p.comorbidities.some((cond: string) =>
-            cond.toLowerCase().includes('hypertension') ||
-            cond.toLowerCase().includes('cardiac') ||
-            cond.toLowerCase().includes('heart')
-          )
-        ).length;
-
-        // Add computed groups if they have patients
-        if (oncologyCount > 0) {
-          updatedGroups.push({
-            id: 'oncology-trial',
-            name: 'Oncology Trial #4287',
-            description: 'Novel chemotherapy adverse event monitoring',
-            patientCount: oncologyCount,
-            primaryDrug: 'Investigational',
-            studyPhase: 'Phase II',
-          });
+        // Fetch all patients to determine available groups
+        const response = await apiClient.get('/patients');
+        const patients = response.data;
+        
+        if (patients.length === 0) {
+          // No patients uploaded yet
+          setGroups([{
+            id: 'none',
+            name: 'No Patients',
+            description: 'Upload a CSV file to see patient groups',
+            patientCount: 0,
+          }]);
+          setLoading(false);
+          return;
         }
 
-        if (cardioCount > 0) {
-          updatedGroups.push({
-            id: 'cardio-prevention',
-            name: 'Cardiovascular Prevention',
-            description: 'Statin and ACE inhibitor combination study',
-            patientCount: cardioCount,
-            primaryDrug: 'Multi-drug',
-            studyPhase: 'Phase III',
-          });
-        }
-
-        setGroups(updatedGroups);
-
-        // Set default group if none selected
+        // Create groups based on actual patient data
+        const allGroup: Group = {
+          id: 'all',
+          name: 'All Patients',
+          description: `All ${patients.length} patients from uploaded data`,
+          patientCount: patients.length,
+        };
+        
+        // Analyze medications to create drug-based groups
+        const medicationGroups = new Map<string, any[]>();
+        
+        patients.forEach((patient: any) => {
+          if (patient.medications && Array.isArray(patient.medications)) {
+            patient.medications.forEach((medication: string) => {
+              const med = medication.trim();
+              if (med) {
+                if (!medicationGroups.has(med)) {
+                  medicationGroups.set(med, []);
+                }
+                medicationGroups.get(med)!.push(patient);
+              }
+            });
+          }
+        });
+        
+        // Create groups for medications with at least 2 patients
+        const dynamicGroups: Group[] = [];
+        medicationGroups.forEach((medPatients, medication) => {
+          if (medPatients.length >= 2) {
+            dynamicGroups.push({
+              id: `${medication.toLowerCase()}-group`,
+              name: `${medication} Patients`,
+              description: `Patients taking ${medication}`,
+              patientCount: medPatients.length,
+              primaryDrug: medication,
+              studyPhase: 'Active Monitoring',
+            });
+          }
+        });
+        
+        // Sort dynamic groups by patient count descending
+        dynamicGroups.sort((a, b) => b.patientCount - a.patientCount);
+        
+        // Combine all groups
+        const finalGroups = [allGroup, ...dynamicGroups];
+        
+        setGroups(finalGroups);
+        
+        // Set initial group if none selected
         if (!selectedGroup) {
-          onGroupChange(updatedGroups[0]);
+          onGroupChange(finalGroups[0]);
         }
-
+        
       } catch (error) {
-        console.error('Error fetching group counts:', error);
-
-        // Fallback to default groups with estimated counts
+        console.error('Error fetching patient groups:', error);
+        
+        // Fallback to minimal groups
         const fallbackGroups: Group[] = [
           {
             id: 'all',
             name: 'All Patients',
-            description: 'Complete patient population across all studies',
+            description: 'Error loading patient data',
             patientCount: 0,
-          },
-          {
-            id: 'metformin-study',
-            name: 'Metformin Cohort',
-            description: 'Patients receiving metformin therapy',
-            patientCount: 0,
-            primaryDrug: 'Metformin',
-            studyPhase: 'Phase IV',
-          },
-          {
-            id: 'warfarin-study',
-            name: 'Warfarin Study',
-            description: 'Anticoagulation safety monitoring',
-            patientCount: 0,
-            primaryDrug: 'Warfarin',
-            studyPhase: 'Post-Market',
-          },
+          }
         ];
-
+        
         setGroups(fallbackGroups);
         if (!selectedGroup) {
           onGroupChange(fallbackGroups[0]);
@@ -154,8 +121,8 @@ export const GroupSelector: React.FC<GroupSelectorProps> = ({
       }
     };
 
-    fetchGroupCounts();
-  }, []); // Only fetch once on mount
+    fetchGroups();
+  }, []); // Remove dependency to avoid infinite loops
 
   const handleGroupSelect = (group: Group) => {
     onGroupChange(group);
