@@ -27,7 +27,7 @@ The app runs at http://localhost:5173
 ## Environment Variables
 
 - `VITE_API_BASE_URL`: Base URL of your backend (e.g. Railway) like `https://api.example.com/api`. If omitted, the app uses `/api` and, in dev, relies on the Vite proxy below.
-- `VITE_DEV_PROXY_TARGET`: When developing locally, set this to your backend dev server (e.g. `http://localhost:3000`) so that requests to `/api` are proxied and CORS is avoided.
+- `VITE_DEV_PROXY_TARGET`: When developing locally, set this to your Python backend dev server (e.g. `http://localhost:8000`) so that requests to `/api` are proxied and CORS is avoided.
 
 ## Realtime Alerts
 

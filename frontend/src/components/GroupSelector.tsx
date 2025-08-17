@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
+import { apiClient } from '../lib/api';
 
 export interface Group {
   id: string;
@@ -15,57 +16,160 @@ interface GroupSelectorProps {
   onGroupChange: (group: Group) => void;
 }
 
-const DEFAULT_GROUPS: Group[] = [
-  {
-    id: 'all',
-    name: 'All Patients',
-    description: 'Complete patient population across all studies',
-    patientCount: 2847,
-  },
-  {
-    id: 'metformin-study',
-    name: 'Metformin Cohort',
-    description: 'Patients receiving metformin therapy',
-    patientCount: 1234,
-    primaryDrug: 'Metformin',
-    studyPhase: 'Phase IV',
-  },
-  {
-    id: 'warfarin-study',
-    name: 'Warfarin Study',
-    description: 'Anticoagulation safety monitoring',
-    patientCount: 567,
-    primaryDrug: 'Warfarin',
-    studyPhase: 'Post-Market',
-  },
-  {
-    id: 'oncology-trial',
-    name: 'Oncology Trial #4287',
-    description: 'Novel chemotherapy adverse event monitoring',
-    patientCount: 423,
-    primaryDrug: 'Investigational',
-    studyPhase: 'Phase II',
-  },
-  {
-    id: 'cardio-prevention',
-    name: 'Cardiovascular Prevention',
-    description: 'Statin and ACE inhibitor combination study',
-    patientCount: 892,
-    primaryDrug: 'Multi-drug',
-    studyPhase: 'Phase III',
-  },
-];
-
 export const GroupSelector: React.FC<GroupSelectorProps> = ({
   selectedGroup,
   onGroupChange,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch real patient counts for groups
+  useEffect(() => {
+    const fetchGroupCounts = async () => {
+      try {
+        setLoading(true);
+
+        // Fetch patient counts for different groups
+        const responses = await Promise.all([
+          apiClient.get('/patients'),
+          apiClient.get('/patients?group=metformin-study'),
+          apiClient.get('/patients?group=warfarin-study')
+        ]);
+
+        // Create groups with real data
+        const updatedGroups: Group[] = [
+          {
+            id: 'all',
+            name: 'All Patients',
+            description: 'Complete patient population across all studies',
+            patientCount: responses[0].data.length,
+          },
+          {
+            id: 'metformin-study',
+            name: 'Metformin Cohort',
+            description: 'Patients receiving metformin therapy',
+            patientCount: responses[1].data.length,
+            primaryDrug: 'Metformin',
+            studyPhase: 'Phase IV',
+          },
+          {
+            id: 'warfarin-study',
+            name: 'Warfarin Study',
+            description: 'Anticoagulation safety monitoring',
+            patientCount: responses[2].data.length,
+            primaryDrug: 'Warfarin',
+            studyPhase: 'Post-Market',
+          },
+        ];
+
+        // Calculate additional groups based on actual patient data
+        const oncologyCount = responses[0].data.filter((p: any) =>
+          p.medications.some((med: string) =>
+            med.toLowerCase().includes('chemo') ||
+            med.toLowerCase().includes('onco') ||
+            p.comorbidities.some((cond: string) => cond.toLowerCase().includes('cancer'))
+          )
+        ).length;
+
+        const cardioCount = responses[0].data.filter((p: any) =>
+          p.medications.some((med: string) =>
+            med.toLowerCase().includes('statin') ||
+            med.toLowerCase().includes('ace') ||
+            med.toLowerCase().includes('lisinopril') ||
+            med.toLowerCase().includes('atorvastatin')
+          ) ||
+          p.comorbidities.some((cond: string) =>
+            cond.toLowerCase().includes('hypertension') ||
+            cond.toLowerCase().includes('cardiac') ||
+            cond.toLowerCase().includes('heart')
+          )
+        ).length;
+
+        // Add computed groups if they have patients
+        if (oncologyCount > 0) {
+          updatedGroups.push({
+            id: 'oncology-trial',
+            name: 'Oncology Trial #4287',
+            description: 'Novel chemotherapy adverse event monitoring',
+            patientCount: oncologyCount,
+            primaryDrug: 'Investigational',
+            studyPhase: 'Phase II',
+          });
+        }
+
+        if (cardioCount > 0) {
+          updatedGroups.push({
+            id: 'cardio-prevention',
+            name: 'Cardiovascular Prevention',
+            description: 'Statin and ACE inhibitor combination study',
+            patientCount: cardioCount,
+            primaryDrug: 'Multi-drug',
+            studyPhase: 'Phase III',
+          });
+        }
+
+        setGroups(updatedGroups);
+
+        // Set default group if none selected
+        if (!selectedGroup) {
+          onGroupChange(updatedGroups[0]);
+        }
+
+      } catch (error) {
+        console.error('Error fetching group counts:', error);
+
+        // Fallback to default groups with estimated counts
+        const fallbackGroups: Group[] = [
+          {
+            id: 'all',
+            name: 'All Patients',
+            description: 'Complete patient population across all studies',
+            patientCount: 0,
+          },
+          {
+            id: 'metformin-study',
+            name: 'Metformin Cohort',
+            description: 'Patients receiving metformin therapy',
+            patientCount: 0,
+            primaryDrug: 'Metformin',
+            studyPhase: 'Phase IV',
+          },
+          {
+            id: 'warfarin-study',
+            name: 'Warfarin Study',
+            description: 'Anticoagulation safety monitoring',
+            patientCount: 0,
+            primaryDrug: 'Warfarin',
+            studyPhase: 'Post-Market',
+          },
+        ];
+
+        setGroups(fallbackGroups);
+        if (!selectedGroup) {
+          onGroupChange(fallbackGroups[0]);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchGroupCounts();
+  }, []); // Only fetch once on mount
 
   const handleGroupSelect = (group: Group) => {
     onGroupChange(group);
     setIsOpen(false);
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center space-x-2 px-3 py-2 bg-white border border-gray-300 rounded-md">
+        <div className="animate-spin h-4 w-4 border-b-2 border-blue-600 rounded-full"></div>
+        <span className="text-sm text-gray-500">Loading groups...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="relative">
@@ -95,7 +199,7 @@ export const GroupSelector: React.FC<GroupSelectorProps> = ({
       {isOpen && (
         <div className="absolute top-full left-0 z-50 mt-2 w-80 bg-white border border-gray-200 rounded-md shadow-lg">
           <div className="py-1">
-            {DEFAULT_GROUPS.map((group) => (
+            {groups.map((group) => (
               <button
                 key={group.id}
                 type="button"

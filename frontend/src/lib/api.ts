@@ -2,10 +2,45 @@ import axios from 'axios';
 
 const apiBaseUrl = (import.meta as any).env?.VITE_API_BASE_URL || '/api';
 
+console.log('[API] Initializing with base URL:', apiBaseUrl);
+
 export const apiClient = axios.create({
   baseURL: apiBaseUrl,
   timeout: 15000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
+
+// Add request interceptor for debugging
+apiClient.interceptors.request.use(
+  (config) => {
+    console.log('[API] Request:', config.method?.toUpperCase(), config.url);
+    return config;
+  },
+  (error) => {
+    console.error('[API] Request error:', error);
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for debugging
+apiClient.interceptors.response.use(
+  (response) => {
+    console.log('[API] Response:', response.status, response.config.url);
+    return response;
+  },
+  (error) => {
+    console.error('[API] Response error:', {
+      url: error.config?.url,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      message: error.message,
+      data: error.response?.data
+    });
+    return Promise.reject(error);
+  }
+);
 
 export type Patient = {
   id: string;
@@ -29,7 +64,6 @@ export async function fetchPatients(): Promise<Patient[]> {
   return data;
 }
 
-export async function fetchAlerts(): Promise<AlertEvent[]> {
-  const { data } = await apiClient.get<AlertEvent[]>('/alerts');
-  return data;
+export async function fetchAlertsStream() {
+  return new EventSource(`${apiBaseUrl}/events/alerts`);
 } 

@@ -1,0 +1,11 @@
+patient_id,age,sex,race,medications,comorbidities
+P-001,45,M,White,"Metformin,Lisinopril","Type 2 Diabetes,Hypertension"
+P-002,67,F,Black,"Warfarin,Digoxin","Atrial Fibrillation,Heart Failure"
+P-003,34,M,Hispanic,"Metformin,Atorvastatin","Type 2 Diabetes"
+P-004,56,F,Asian,"Warfarin,Amlodipine","Atrial Fibrillation,Hypertension"
+P-005,72,M,White,"Metformin,Lisinopril,Aspirin","Type 2 Diabetes,CAD,Hypertension"
+P-006,29,F,Black,"Metformin","Type 2 Diabetes"
+P-007,61,M,Hispanic,"Warfarin,Amiodarone","Atrial Fibrillation,CAD"
+P-008,43,F,White,"Metformin,Atorvastatin,Lisinopril","Type 2 Diabetes,Hypertension,Dyslipidemia"
+P-009,55,M,Asian,"Warfarin,Furosemide","Atrial Fibrillation,Heart Failure"
+P-010,38,F,Other,"Metformin,Glipizide","Type 2 Diabetes" 
